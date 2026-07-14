@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CityDB — PostgreSQL Execution Visualizer</title>
+    <meta name="description" content="CityDB translates PostgreSQL query execution plans into an animated 3D city. Every building, road, and bridge corresponds to a real database object. Nothing is simulated." />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="CityDB — PostgreSQL Execution Visualizer" />
+    <meta property="og:description" content="Watch your SQL execute as a living 3D city. Powered by EXPLAIN ANALYZE." />
+    <meta property="og:type" content="website" />
+
+    <!-- Google Fonts preconnect (loaded in index.css) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <!-- Critical above-the-fold styles: dark background before JS hydrates -->
+    <style>
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #05070d;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

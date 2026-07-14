@@ -1,0 +1,38 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: citydb
+      POSTGRES_PASSWORD: citydb
+      POSTGRES_DB: citydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - citydb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      DATABASE_URL: postgres://citydb:citydb@postgres:5432/citydb
+      NODE_ENV: development
+      PORT: 4000
+      DEVELOPMENT_MODE: "true"
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: npm run dev
+
+volumes:
+  citydb_data:

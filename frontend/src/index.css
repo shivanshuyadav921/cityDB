@@ -1,0 +1,97 @@
+/* ─── Google Fonts ─────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ─── Design tokens ───────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --color-accent:      #ffe14d;
+  --color-accent-dim:  #ffe14d44;
+
+  /* Backgrounds */
+  --color-bg:          #05070d;
+  --color-bg-panel:    rgba(8, 12, 24, 0.92);
+  --color-bg-input:    #080c18;
+  --color-bg-item:     #111a30;
+  --color-bg-hover:    #1a2340;
+
+  /* Borders */
+  --color-border:      #1a2340;
+  --color-border-mid:  #111a30;
+
+  /* Text */
+  --color-text:        #e8ecff;
+  --color-text-muted:  #5a6a8f;
+  --color-text-dim:    #3d4a70;
+  --color-text-blue:   #8fb0ff;
+  --color-text-green:  #8fe0a0;
+
+  /* Status */
+  --color-success:     #4aff8a;
+  --color-error:       #ff5a6e;
+  --color-info:        #4d7cff;
+  --color-warn:        #ffe14d;
+}
+
+/* ─── Reset ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-bg-hover);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border);
+}
+
+/* ─── Animations ──────────────────────────────────────────────────────────── */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-accent-dim); }
+  50%       { box-shadow: 0 0 12px 2px var(--color-accent-dim); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ─── Range input accent ──────────────────────────────────────────────────── */
+input[type="range"] {
+  accent-color: var(--color-accent);
+}
+
+/* ─── Focus ring ──────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-accent-dim);
+  outline-offset: 2px;
+}
