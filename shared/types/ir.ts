@@ -41,6 +41,8 @@ export interface VisualTimeline {
   totalDurationNormalizedMs: number; // normalized total for playback
   operations: VisualOperation[];
   rootOpId: string;
+  /** True when the timeline came from EXPLAIN without ANALYZE (cost estimates only). */
+  explainOnly?: boolean;
 }
 
 export type CityScale = "village" | "town" | "megacity";
@@ -82,5 +84,6 @@ export type ServerMessage =
 
 export type ClientMessage =
   | { type: "run_query"; payload: { sql: string } }
+  | { type: "explain_query"; payload: { sql: string } }
   | { type: "get_city" }
   | { type: "cancel_query" };

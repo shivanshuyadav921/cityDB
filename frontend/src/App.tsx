@@ -8,6 +8,9 @@ import { PerformanceDashboard } from "./PerformanceDashboard";
 import { useCityDB } from "./useCityDB";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ToastContainer, useToast } from "./Toast";
+import { useAuth } from "./AuthContext";
+import { AuthModal } from "./AuthModal";
+import { SchemaModal } from "./SchemaModal";
 import type { VisualTimeline } from "./ir";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -35,6 +38,29 @@ const DEMO_QUERY = "SELECT * FROM users WHERE email = 'alice@example.com'";
 const HISTORY_STORAGE_KEY = "citydb_query_history";
 const SAVED_QUERIES_STORAGE_KEY = "citydb_saved_queries";
 
+const SAMPLE_QUERIES = [
+  {
+    label: "Demo: Index/Seq Scan",
+    sql: "SELECT * FROM users WHERE email = 'alice@example.com'",
+  },
+  {
+    label: "Filter & High Cost Scan",
+    sql: "SELECT * FROM users WHERE salary > 100000",
+  },
+  {
+    label: "Department Aggregation",
+    sql: "SELECT department, COUNT(*), AVG(salary) FROM users GROUP BY department",
+  },
+  {
+    label: "Top 10 Earners (Sort + Limit)",
+    sql: "SELECT name, salary, department FROM users ORDER BY salary DESC LIMIT 10",
+  },
+  {
+    label: "Total Count",
+    sql: "SELECT count(*) FROM users",
+  },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function loadHistoryFromStorage(): HistoryEntry[] {
@@ -52,7 +78,7 @@ function saveHistoryToStorage(history: HistoryEntry[]): void {
   try {
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
   } catch {
-    // localStorage may be unavailable (private mode, quota exceeded)
+    // localStorage may be unavailable
   }
 }
 
@@ -75,7 +101,6 @@ function saveSavedQueriesToStorage(queries: SavedQuery[]): void {
   }
 }
 
-/** Normalize SQL: trim leading/trailing whitespace and collapse internal runs of whitespace. */
 function formatSQL(sql: string): string {
   return sql
     .trim()
@@ -88,6 +113,7 @@ function formatSQL(sql: string): string {
 export default function App() {
   const {
     connected,
+    transport,
     city,
     timeline,
     error,
@@ -96,9 +122,9 @@ export default function App() {
     explainQuery,
     cancelQuery,
     refreshCity,
-    clearError,
   } = useCityDB();
 
+  const { user, logout } = useAuth();
   const { toasts, addToast, removeToast } = useToast();
 
   const [sql, setSql] = useState(DEMO_QUERY);
@@ -117,22 +143,26 @@ export default function App() {
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [saveQueryName, setSaveQueryName] = useState("");
 
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [schemaModalOpen, setSchemaModalOpen] = useState(false);
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+
   const rafRef = useRef<number>();
   const lastTsRef = useRef<number>();
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── History persistence ────────────────────────────────────────────────────
+  // History persistence
   useEffect(() => {
     saveHistoryToStorage(history);
   }, [history]);
 
-  // ── Saved queries persistence ─────────────────────────────────────────────
+  // Saved queries persistence
   useEffect(() => {
     saveSavedQueriesToStorage(savedQueries);
   }, [savedQueries]);
 
-  // ── Timeline arrival ───────────────────────────────────────────────────────
+  // Timeline arrival
   useEffect(() => {
     if (!timeline) return;
     setPlayheadMs(0);
@@ -147,26 +177,21 @@ export default function App() {
         executionMs: timeline.totalExecutionTimeMs,
         pinned: false,
       };
-      setHistory((prev) => {
-        const updated = [entry, ...prev].slice(0, 20);
-        return updated;
-      });
+      setHistory((prev) => [entry, ...prev].slice(0, 20));
       addToast(`Query executed in ${timeline.totalExecutionTimeMs.toFixed(1)}ms`, "success");
     } else {
       addToast("Cost estimates ready (EXPLAIN only — no execution)", "info");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeline]);
+  }, [timeline, addToast]);
 
-  // ── Error display ──────────────────────────────────────────────────────────
+  // Error display
   useEffect(() => {
-    if (error && !error.startsWith("Connection lost")) {
+    if (error && !error.startsWith("Notice:")) {
       addToast(error, "error");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [error]);
+  }, [error, addToast]);
 
-  // ── Animation loop ─────────────────────────────────────────────────────────
+  // Animation loop
   useEffect(() => {
     if (!playing || !timeline) return;
 
@@ -201,12 +226,11 @@ export default function App() {
     };
   }, [playing, speed, timeline, compareMode, compareAgainst]);
 
-  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  // Keyboard shortcuts
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
-      const isTyping =
-        target.tagName === "TEXTAREA" || target.tagName === "INPUT";
+      const isTyping = target.tagName === "TEXTAREA" || target.tagName === "INPUT";
 
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
@@ -225,9 +249,7 @@ export default function App() {
         setPlaying((p) => !p);
       } else if (e.key === "ArrowRight" && timeline) {
         setPlaying(false);
-        setPlayheadMs((p) =>
-          Math.min(p + 200, timeline.totalDurationNormalizedMs)
-        );
+        setPlayheadMs((p) => Math.min(p + 200, timeline.totalDurationNormalizedMs));
       } else if (e.key === "ArrowLeft") {
         setPlaying(false);
         setPlayheadMs((p) => Math.max(p - 200, 0));
@@ -240,15 +262,12 @@ export default function App() {
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, timeline, cancelQuery]);
 
-  // ── Fullscreen ─────────────────────────────────────────────────────────────
   const toggleFullscreen = useCallback(() => {
     setFullscreen((f) => !f);
   }, []);
 
-  // ── Actions ────────────────────────────────────────────────────────────────
   function handleRun() {
     if (!sql.trim()) return;
     runQuery(sql);
@@ -321,16 +340,9 @@ export default function App() {
 
   function handleRefreshCity() {
     refreshCity();
-    addToast("Refreshing city from database…", "info");
+    addToast("Refreshing city snapshot from database…", "info");
   }
 
-  // ── Reconnect info ─────────────────────────────────────────────────────────
-  const reconnectMessage =
-    !connected && error?.startsWith("Connection lost")
-      ? error
-      : null;
-
-  // ── Render ─────────────────────────────────────────────────────────────────
   const sortedHistory = [...history].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     return b.ranAt - a.ranAt;
@@ -344,11 +356,291 @@ export default function App() {
         height: "100vh",
         fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
         background: "#05070d",
+        overflow: "hidden",
       }}
     >
-      {/* No inline <style> — moved to index.css */}
+      {/* ── Top Navigation Bar ────────────────────────────────────────────── */}
+      {!fullscreen && (
+        <header
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 52,
+            background: "rgba(8, 12, 24, 0.92)",
+            borderBottom: "1px solid #1a2340",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 16px",
+            zIndex: 30,
+          }}
+        >
+          {/* Left Brand */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div
+                style={{
+                  width: 24,
+                  height: 24,
+                  background: "linear-gradient(135deg, #ffe14d 0%, #ff8c00 100%)",
+                  borderRadius: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow: "0 0 12px rgba(255, 225, 77, 0.4)",
+                  fontWeight: 900,
+                  fontSize: 13,
+                  color: "#05070d",
+                }}
+              >
+                C
+              </div>
+              <h1
+                style={{
+                  fontSize: 16,
+                  fontWeight: 800,
+                  color: "#e8ecff",
+                  margin: 0,
+                  letterSpacing: "0.02em",
+                }}
+              >
+                City<span style={{ color: "#ffe14d" }}>DB</span>
+              </h1>
+              <span
+                style={{
+                  fontSize: 10,
+                  background: "#111a30",
+                  color: "#8fb0ff",
+                  border: "1px solid #1a2340",
+                  borderRadius: 4,
+                  padding: "1px 6px",
+                  fontWeight: 600,
+                }}
+              >
+                v1.0
+              </span>
+            </div>
 
-      {/* ── 3D Canvas(es) ─────────────────────────────────────────────────── */}
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                background: connected ? "rgba(74, 255, 138, 0.1)" : "rgba(255, 90, 110, 0.1)",
+                border: `1px solid ${connected ? "rgba(74, 255, 138, 0.25)" : "rgba(255, 90, 110, 0.25)"}`,
+                borderRadius: 20,
+                padding: "2px 8px",
+                fontSize: 10,
+                color: connected ? "#4aff8a" : "#ff5a6e",
+                fontWeight: 600,
+              }}
+            >
+              <span>{connected ? "●" : "○"}</span>
+              <span>{connected ? (transport === "websocket" ? "WS Live" : "REST Live") : "Offline"}</span>
+            </div>
+          </div>
+
+          {/* Center Sample Query Selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "#5a6a8f" }}>Sample:</span>
+            <select
+              onChange={(e) => {
+                if (e.target.value) {
+                  setSql(e.target.value);
+                  textareaRef.current?.focus();
+                }
+              }}
+              defaultValue=""
+              style={{
+                background: "#080c18",
+                border: "1px solid #1a2340",
+                color: "#8fa0cc",
+                borderRadius: 6,
+                padding: "4px 8px",
+                fontSize: 11,
+                outline: "none",
+                cursor: "pointer",
+              }}
+            >
+              <option value="" disabled>
+                Load preset query…
+              </option>
+              {SAMPLE_QUERIES.map((q) => (
+                <option key={q.label} value={q.sql}>
+                  {q.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Right Navigation Controls & User Profile */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={() => setSchemaModalOpen(true)}
+              style={{
+                background: "#111a30",
+                border: "1px solid #1a2340",
+                borderRadius: 6,
+                color: "#8fa0cc",
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "5px 10px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+              title="Inspect tables, columns, indexes and foreign keys"
+            >
+              <span>📊</span> Schema Explorer
+            </button>
+
+            <IconButton
+              title="Refresh city snapshot from database"
+              onClick={handleRefreshCity}
+            >
+              ↻
+            </IconButton>
+
+            <IconButton
+              title="Settings"
+              onClick={() => setShowSettings((s) => !s)}
+              active={showSettings}
+            >
+              ⚙
+            </IconButton>
+
+            {/* Auth Profile / Sign-in */}
+            {user ? (
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setUserDropdownOpen((o) => !o)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    background: "#111a30",
+                    border: "1px solid #2a3a60",
+                    borderRadius: 20,
+                    padding: "3px 10px 3px 4px",
+                    color: "#e8ecff",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      background: user.avatar_url
+                        ? `url(${user.avatar_url}) center/cover`
+                        : "linear-gradient(135deg, #4d7cff, #9b51e0)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: "#fff",
+                    }}
+                  >
+                    {!user.avatar_url && user.name.charAt(0).toUpperCase()}
+                  </div>
+                  <span style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {user.name}
+                  </span>
+                  <span style={{ fontSize: 9, color: "#5a6a8f" }}>▼</span>
+                </button>
+
+                {userDropdownOpen && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: 36,
+                      right: 0,
+                      width: 220,
+                      background: "#080c18",
+                      border: "1px solid #1a2340",
+                      borderRadius: 8,
+                      padding: 12,
+                      boxShadow: "0 10px 25px rgba(0,0,0,0.5)",
+                      zIndex: 100,
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#e8ecff" }}>
+                      {user.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#5a6a8f", marginTop: 2, wordBreak: "break-all" }}>
+                      {user.email}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        display: "inline-block",
+                        fontSize: 9,
+                        background: user.provider === "google" ? "rgba(66, 133, 244, 0.15)" : "#111a30",
+                        color: user.provider === "google" ? "#82b1ff" : "#ffe14d",
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Signed in via {user.provider === "google" ? "Google" : "Email"}
+                    </div>
+
+                    <div style={{ height: 1, background: "#111a30", margin: "10px 0" }} />
+
+                    <button
+                      onClick={() => {
+                        logout();
+                        setUserDropdownOpen(false);
+                        addToast("Signed out successfully.", "info");
+                      }}
+                      style={{
+                        width: "100%",
+                        background: "#22080e",
+                        border: "1px solid #55121e",
+                        color: "#ff5a6e",
+                        borderRadius: 6,
+                        padding: "6px 0",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setAuthModalOpen(true)}
+                style={{
+                  background: "linear-gradient(135deg, #1a2340, #2a3a60)",
+                  border: "1px solid #ffe14d66",
+                  color: "#ffe14d",
+                  borderRadius: 6,
+                  padding: "5px 12px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  letterSpacing: "0.02em",
+                  boxShadow: "0 0 10px rgba(255, 225, 77, 0.15)",
+                }}
+              >
+                Sign In / Register
+              </button>
+            )}
+          </div>
+        </header>
+      )}
+
+      {/* ── 3D Canvas ─────────────────────────────────────────────────────── */}
       <div
         style={{
           display: "flex",
@@ -366,9 +658,7 @@ export default function App() {
             borderRight: compareMode ? "2px solid #ffe14d44" : "none",
           }}
         >
-          {compareMode && (
-            <SplitLabel text="AFTER (current)" />
-          )}
+          {compareMode && <SplitLabel text="AFTER (current)" />}
           <ErrorBoundary>
             <Canvas
               camera={{ position: [22, 18, 22], fov: 45 }}
@@ -392,7 +682,7 @@ export default function App() {
             title="Toggle fullscreen (F)"
             style={{
               position: "absolute",
-              top: 12,
+              top: fullscreen ? 12 : 64,
               right: 12,
               background: "rgba(8,12,24,0.8)",
               border: "1px solid #1a2340",
@@ -438,71 +728,6 @@ export default function App() {
       {/* ── Left panel: SQL editor + controls ─────────────────────────────── */}
       {!fullscreen && (
         <div style={topLeftPanel}>
-          {/* Header */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 12,
-            }}
-          >
-            <div>
-              <h1
-                style={{
-                  fontSize: 15,
-                  color: "#ffe14d",
-                  margin: 0,
-                  letterSpacing: "0.04em",
-                  fontWeight: 700,
-                }}
-              >
-                CityDB
-              </h1>
-              <div
-                style={{
-                  fontSize: 10,
-                  color: connected ? "#4aff8a" : "#ff5a6e",
-                  marginTop: 2,
-                }}
-              >
-                {connected ? "● connected" : "○ disconnected"}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <IconButton
-                title="Refresh city (re-read schema)"
-                onClick={handleRefreshCity}
-              >
-                ↻
-              </IconButton>
-              <IconButton
-                title="Settings"
-                onClick={() => setShowSettings((s) => !s)}
-                active={showSettings}
-              >
-                ⚙
-              </IconButton>
-            </div>
-          </div>
-
-          {/* Reconnect notice */}
-          {reconnectMessage && (
-            <div
-              style={{
-                fontSize: 10,
-                color: "#ffe14d",
-                background: "#1a1500",
-                border: "1px solid #4a3a00",
-                borderRadius: 4,
-                padding: "6px 8px",
-                marginBottom: 10,
-              }}
-            >
-              {reconnectMessage}
-            </div>
-          )}
-
           {/* Settings panel */}
           {showSettings && (
             <div
@@ -517,7 +742,7 @@ export default function App() {
               }}
             >
               <div style={{ marginBottom: 6, color: "#8fb0ff", fontWeight: 600 }}>
-                Settings
+                Settings & Shortcuts
               </div>
               <label
                 style={{
@@ -525,6 +750,7 @@ export default function App() {
                   alignItems: "center",
                   gap: 6,
                   marginBottom: 4,
+                  cursor: "pointer",
                 }}
               >
                 <input
@@ -541,8 +767,6 @@ export default function App() {
                 Compare mode (split screen)
               </label>
               <div style={{ marginTop: 8, color: "#3d4a70", fontSize: 10 }}>
-                Keyboard shortcuts:
-                <br />
                 <kbd style={kbdStyle}>Ctrl+↵</kbd> Execute query
                 <br />
                 <kbd style={kbdStyle}>Space</kbd> Pause / Resume
@@ -559,8 +783,13 @@ export default function App() {
           )}
 
           {/* SQL editor */}
-          <div style={{ fontSize: 10, color: "#5a6a8f", marginBottom: 4 }}>
-            SQL Editor
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 10, color: "#5a6a8f", fontWeight: 600 }}>
+              SQL Query Editor
+            </span>
+            <span style={{ fontSize: 9, color: "#3d4a70" }}>
+              PostgreSQL EXPLAIN ANALYZE
+            </span>
           </div>
           <textarea
             ref={textareaRef}
@@ -581,15 +810,13 @@ export default function App() {
           />
 
           {/* Editor actions */}
-          <div
-            style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}
-          >
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
             <button
               id="run-query-btn"
               style={btnStyle}
               onClick={handleRun}
               disabled={loading || !connected}
-              title="Execute query (Ctrl+Enter)"
+              title="Execute query and animate plan in 3D (Ctrl+Enter)"
             >
               {loading ? "⏳ Running…" : "▶ Execute"}
             </button>
@@ -703,9 +930,7 @@ export default function App() {
                 >
                   {playing ? "⏸" : "▶"}
                 </button>
-                <span
-                  style={{ fontSize: 10, color: "#3d4a70", marginLeft: 2 }}
-                >
+                <span style={{ fontSize: 10, color: "#3d4a70", marginLeft: 2 }}>
                   Speed:
                 </span>
                 {([0.25, 0.5, 1, 2, 4] as const).map((s) => (
@@ -761,9 +986,9 @@ export default function App() {
                   fontWeight: 600,
                 }}
               >
-                Query History
+                Query History ({sortedHistory.length})
               </div>
-              <div style={{ maxHeight: 180, overflowY: "auto" }}>
+              <div style={{ maxHeight: 160, overflowY: "auto" }}>
                 {sortedHistory.map((h) => (
                   <HistoryItem
                     key={h.id}
@@ -815,7 +1040,9 @@ export default function App() {
                 placeholder="Name (optional)"
                 value={saveQueryName}
                 onChange={(e) => setSaveQueryName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSaveQuery(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveQuery();
+                }}
                 style={{
                   flex: 1,
                   background: "#080c18",
@@ -838,7 +1065,7 @@ export default function App() {
             </div>
 
             {showSavedQueries && savedQueries.length > 0 && (
-              <div style={{ maxHeight: 160, overflowY: "auto" }}>
+              <div style={{ maxHeight: 140, overflowY: "auto" }}>
                 {savedQueries.map((q) => (
                   <div
                     key={q.id}
@@ -860,7 +1087,10 @@ export default function App() {
                         whiteSpace: "nowrap",
                         cursor: "pointer",
                       }}
-                      onClick={() => { setSql(q.sql); textareaRef.current?.focus(); }}
+                      onClick={() => {
+                        setSql(q.sql);
+                        textareaRef.current?.focus();
+                      }}
                       title={q.sql}
                     >
                       📎 {q.name}
@@ -881,37 +1111,6 @@ export default function App() {
                 No saved queries yet. Enter a query above and click 💾 Save.
               </div>
             )}
-          </div>
-
-          <div
-            style={{
-              fontSize: 10,
-              color: "#3d4a70",
-              marginTop: 14,
-              lineHeight: 1.6,
-              borderTop: "1px solid #111a30",
-              paddingTop: 10,
-            }}
-          >
-            <strong style={{ color: "#5a6a8f" }}>Demo:</strong>
-            <br />
-            1. Run the default query — watch a Seq Scan crawl the city.
-            <br />
-            2. Run:{" "}
-            <code
-              style={{ color: "#8fe0a0", fontSize: 9 }}
-              onClick={() =>
-                setSql(
-                  "CREATE INDEX idx_users_email ON users(email)"
-                )
-              }
-            >
-              CREATE INDEX idx_users_email ON users(email)
-            </code>
-            <br />
-            3. Re-run the query — observe Index Scan beam.
-            <br />
-            4. Enable Compare Mode, set first run as baseline.
           </div>
         </div>
       )}
@@ -936,6 +1135,23 @@ export default function App() {
         <CompareDeltaBadge current={timeline} baseline={compareAgainst} />
       )}
 
+      {/* ── Modals ────────────────────────────────────────────────────────── */}
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onSuccess={(msg) => addToast(msg, "success")}
+      />
+
+      <SchemaModal
+        isOpen={schemaModalOpen}
+        onClose={() => setSchemaModalOpen(false)}
+        city={city}
+        onSelectQuery={(newSql) => {
+          setSql(newSql);
+          textareaRef.current?.focus();
+        }}
+      />
+
       {/* ── Toast notifications ───────────────────────────────────────────── */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
@@ -949,7 +1165,7 @@ function SplitLabel({ text, dim }: { text: string; dim?: boolean }) {
     <div
       style={{
         position: "absolute",
-        top: 16,
+        top: 64,
         left: "50%",
         transform: "translateX(-50%)",
         fontSize: 11,
@@ -987,7 +1203,7 @@ function CompareDeltaBadge({
     <div
       style={{
         position: "absolute",
-        top: 16,
+        top: 64,
         left: "50%",
         transform: "translateX(-50%)",
         background: "rgba(8,12,24,0.9)",
@@ -1001,8 +1217,7 @@ function CompareDeltaBadge({
         textAlign: "center",
       }}
     >
-      {faster ? "▼" : "▲"}{" "}
-      {Math.abs(delta).toFixed(2)}ms ({faster ? "-" : "+"}
+      {faster ? "▼" : "▲"} {Math.abs(delta).toFixed(2)}ms ({faster ? "-" : "+"}
       {Math.abs(Number(pct))}%)
       <div style={{ fontSize: 9, color: "#5a6a8f", fontWeight: 400 }}>
         vs baseline
@@ -1136,7 +1351,7 @@ function IconButton({
 
 const topLeftPanel: React.CSSProperties = {
   position: "absolute",
-  top: 16,
+  top: 64,
   left: 16,
   width: 320,
   background: "rgba(8,12,24,0.92)",
@@ -1145,13 +1360,14 @@ const topLeftPanel: React.CSSProperties = {
   padding: 14,
   color: "#e8ecff",
   backdropFilter: "blur(8px)",
-  maxHeight: "calc(100vh - 32px)",
+  maxHeight: "calc(100vh - 80px)",
   overflowY: "auto",
   zIndex: 10,
 };
 
 const textareaStyle: React.CSSProperties = {
   width: "100%",
+  boxSizing: "border-box",
   background: "#080c18",
   border: "1px solid #1a2340",
   borderRadius: 6,

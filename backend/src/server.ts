@@ -6,7 +6,6 @@ import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import path from "path";
-import { fileURLToPath } from "url";
 import {
   getCityMetadata,
   runExplain,
@@ -18,6 +17,15 @@ import { translateExplainToTimeline } from "./translator.js";
 import type { ClientMessage, ServerMessage } from "./ir.js";
 import { assertVisualizableQuery } from "./validation.js";
 import { logger } from "./logger.js";
+import {
+  registerWithEmail,
+  loginWithEmail,
+  loginWithGoogle,
+  getUserProfile,
+  verifyAuthToken,
+  getGoogleClientId,
+  initAuthTable,
+} from "./auth.js";
 
 // ─── Environment ─────────────────────────────────────────────────────────────
 
@@ -75,7 +83,109 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
 
-// ─── REST API ────────────────────────────────────────────────────────────────
+// ─── Authentication REST API ─────────────────────────────────────────────────
+
+/** Register with email and password */
+app.post("/api/auth/register", async (req: Request, res: Response) => {
+  try {
+    const { email, password, name } = req.body as {
+      email?: string;
+      password?: string;
+      name?: string;
+    };
+    if (!email || !password || !name) {
+      res.status(400).json({ error: "Name, email, and password are required." });
+      return;
+    }
+    const result = await registerWithEmail(email, password, name);
+    res.status(201).json(result);
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.warn("auth_register_failed", { message });
+    res.status(400).json({ error: message });
+  }
+});
+
+/** Login with email and password */
+app.post("/api/auth/login", async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body as {
+      email?: string;
+      password?: string;
+    };
+    if (!email || !password) {
+      res.status(400).json({ error: "Email and password are required." });
+      return;
+    }
+    const result = await loginWithEmail(email, password);
+    res.json(result);
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.warn("auth_login_failed", { message });
+    res.status(401).json({ error: message });
+  }
+});
+
+/** Google OAuth login / verification */
+app.post("/api/auth/google", async (req: Request, res: Response) => {
+  try {
+    const { credential, token } = req.body as { credential?: string; token?: string };
+    const credToken = credential || token;
+    if (!credToken) {
+      res.status(400).json({ error: "Google credential token is required." });
+      return;
+    }
+    const result = await loginWithGoogle(credToken);
+    res.json(result);
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.warn("auth_google_failed", { message });
+    res.status(401).json({ error: message });
+  }
+});
+
+/** Get currently authenticated user */
+app.get("/api/auth/me", async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({ error: "No authentication token provided." });
+    return;
+  }
+
+  const token = authHeader.slice(7).trim();
+  const decoded = verifyAuthToken(token);
+  if (!decoded) {
+    res.status(401).json({ error: "Invalid or expired token." });
+    return;
+  }
+
+  try {
+    const user = await getUserProfile(decoded.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found." });
+      return;
+    }
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to retrieve user profile." });
+  }
+});
+
+/** Logout (client discards token) */
+app.post("/api/auth/logout", (_req: Request, res: Response) => {
+  res.json({ success: true, message: "Logged out successfully." });
+});
+
+/** Auth public configuration (Google Client ID, etc.) */
+app.get("/api/auth/config", (_req: Request, res: Response) => {
+  const clientId = getGoogleClientId();
+  res.json({
+    googleConfigured: Boolean(clientId),
+    googleClientId: clientId || null,
+  });
+});
+
+// ─── Query & Schema REST API ─────────────────────────────────────────────────
 
 /** City snapshot: districts, row counts, indexes, foreign keys. */
 app.get("/api/city", async (_req: Request, res: Response) => {
@@ -189,10 +299,8 @@ app.get("/api/history", (_req: Request, res: Response) => {
 
 // ─── Static frontend serving ──────────────────────────────────────────────────
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// In production (dist/server.js), frontend is at ../../frontend/dist
-// In local dev, this path won't exist — that's fine (Vite dev server handles it)
-const frontendDist = path.resolve(__dirname, "../../frontend/dist");
+const currentDir = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+const frontendDist = path.resolve(currentDir, "../../frontend/dist");
 
 app.use(express.static(frontendDist));
 
@@ -282,8 +390,6 @@ wss.on("connection", (socket: WebSocket, req) => {
         });
       }
     } else if (msg.type === "cancel_query") {
-      // Cancellation is handled at the HTTP/connection level via AbortController
-      // For WS, simply acknowledge — the in-flight query will finish or timeout
       send(socket, {
         type: "error",
         payload: { message: "Query cancelled by client." },
@@ -306,15 +412,20 @@ function send(socket: WebSocket, msg: ServerMessage): void {
   }
 }
 
-// ─── Server startup with connection retry ─────────────────────────────────────
+// ─── Server startup ───────────────────────────────────────────────────────────
 
 async function startServer(): Promise<void> {
   logger.info("starting_server", { port: PORT, env: NODE_ENV });
 
-  // Verify DB connectivity before accepting traffic
+  // Initialize auth table
+  await initAuthTable().catch((err) => {
+    logger.warn("auth_table_init_skipped", { message: (err as Error).message });
+  });
+
+  // Verify DB connectivity
   const pool = getPool();
   let attempts = 0;
-  const maxAttempts = 10;
+  const maxAttempts = 3;
 
   while (attempts < maxAttempts) {
     try {
@@ -324,7 +435,7 @@ async function startServer(): Promise<void> {
       break;
     } catch (err) {
       attempts += 1;
-      const delay = Math.min(1000 * 2 ** attempts, 30000);
+      const delay = 1000 * attempts;
       logger.warn("database_connect_retry", {
         attempt: attempts,
         max: maxAttempts,
@@ -332,10 +443,9 @@ async function startServer(): Promise<void> {
         message: (err as Error).message,
       });
       if (attempts >= maxAttempts) {
-        logger.error("database_connect_failed", {
-          message: "Could not connect to PostgreSQL after maximum attempts.",
+        logger.warn("database_connect_deferred", {
+          message: "PostgreSQL connection deferred. API will respond with error or fallback until DB is available.",
         });
-        // Start anyway — Railway health checks will fail and trigger a restart
         break;
       }
       await new Promise((r) => setTimeout(r, delay));
@@ -360,13 +470,11 @@ function shutdown(signal: string): void {
     }
   });
 
-  // Close all WebSocket connections
   wss.clients.forEach((client) => {
     client.close(1001, "Server shutting down");
   });
   wss.close(() => logger.info("websocket_server_closed"));
 
-  // Drain PostgreSQL pool
   const pool = getPool();
   pool
     .end()
@@ -379,7 +487,6 @@ function shutdown(signal: string): void {
       process.exit(1);
     });
 
-  // Force exit if graceful shutdown takes too long
   setTimeout(() => {
     logger.error("forced_exit", { reason: "Graceful shutdown timeout (10s)" });
     process.exit(1);
@@ -400,9 +507,14 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Export & Startup ─────────────────────────────────────────────────────────
 
-startServer().catch((err) => {
-  logger.error("startup_error", { message: (err as Error).message });
-  process.exit(1);
-});
+export default app;
+export { app, httpServer };
+
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    logger.error("startup_error", { message: (err as Error).message });
+    process.exit(1);
+  });
+}

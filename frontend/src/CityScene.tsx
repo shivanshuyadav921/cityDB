@@ -1,7 +1,7 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { CitySnapshot, VisualOperation, VisualTimeline } from "./ir";
+import type { CitySnapshot, VisualOperation, VisualTimeline, District as DistrictType } from "./ir";
 
 interface CitySceneProps {
   timeline: VisualTimeline | null;
@@ -9,6 +9,21 @@ interface CitySceneProps {
   city: CitySnapshot | null;
   hoveredOpId: string | null;
 }
+
+const DEFAULT_DEMO_DISTRICTS: DistrictType[] = [
+  {
+    tableName: "users",
+    estimatedRowCount: 100000,
+    columns: ["id", "email", "name", "salary", "department", "created_at"],
+    indexes: [
+      { indexName: "users_pkey", columns: ["id"], isUnique: true, isPrimary: true },
+      { indexName: "idx_users_email", columns: ["email"], isUnique: false, isPrimary: false },
+    ],
+    foreignKeys: [],
+    scale: "megacity",
+    gridSize: 40,
+  },
+];
 
 export function CityScene({ timeline, playheadMs, city, hoveredOpId }: CitySceneProps) {
   const activeOp = useMemo(() => {
@@ -20,42 +35,46 @@ export function CityScene({ timeline, playheadMs, city, hoveredOpId }: CityScene
     );
   }, [timeline, playheadMs]);
 
-  // If the user hovers/selects an op in the Plan Tree, that op's district
-  // is highlighted even outside of active playback.
   const highlightedOp =
     (hoveredOpId && timeline?.operations.find((o) => o.id === hoveredOpId)) || activeOp;
 
+  const effectiveDistricts = useMemo(() => {
+    if (city?.districts && city.districts.length > 0) {
+      return city.districts;
+    }
+    return DEFAULT_DEMO_DISTRICTS;
+  }, [city]);
+
   // Calculate district positions procedurally
   const districtPositions = useMemo(() => {
-    if (!city?.districts.length) return new Map();
     const positions = new Map<string, { x: number; z: number }>();
-    const count = city.districts.length;
-    
+    const count = effectiveDistricts.length;
+
     // Arrange districts in a grid layout
     const cols = Math.ceil(Math.sqrt(count));
     const spacing = 40;
-    
-    city.districts.forEach((district, index) => {
+
+    effectiveDistricts.forEach((district, index) => {
       const row = Math.floor(index / cols);
       const col = index % cols;
       const x = (col - (cols - 1) / 2) * spacing;
       const z = (row - (Math.ceil(count / cols) - 1) / 2) * spacing;
       positions.set(district.tableName, { x, z });
     });
-    
+
     return positions;
-  }, [city]);
+  }, [effectiveDistricts]);
 
   return (
     <group>
       <ambientLight intensity={0.35} />
       <directionalLight position={[20, 40, 10]} intensity={0.6} color="#88aaff" />
       <fog attach="fog" args={["#05070d", 30, 120]} />
-      
-      {city?.districts.map((district) => {
+
+      {effectiveDistricts.map((district) => {
         const position = districtPositions.get(district.tableName) || { x: 0, z: 0 };
         const isHighlighted = highlightedOp?.district === district.tableName;
-        
+
         return (
           <group key={district.tableName} position={[position.x, 0, position.z]}>
             <District
@@ -66,13 +85,13 @@ export function CityScene({ timeline, playheadMs, city, hoveredOpId }: CityScene
             />
             <ForeignKeyBridges
               district={district}
-              allDistricts={city.districts}
+              allDistricts={effectiveDistricts}
               districtPositions={districtPositions}
             />
           </group>
         );
       })}
-      
+
       <gridHelper args={[120, 60, "#1a2440", "#111a30"]} position={[0, -0.01, 0]} />
     </group>
   );
@@ -84,7 +103,7 @@ function District({
   playheadMs,
   isPlaybackActive,
 }: {
-  district: import("./ir").District;
+  district: DistrictType;
   activeOp: VisualOperation | null;
   playheadMs: number;
   isPlaybackActive: boolean;
@@ -92,82 +111,119 @@ function District({
   const rowCount = district.estimatedRowCount;
   const gridSize = district.gridSize;
 
-  // Procedural generation: village (8x8) / town (20x20) / megacity (40x40),
-  // driven entirely by the district's real row count from the backend.
   const buildings = useMemo(() => {
     const arr: { x: number; z: number; height: number; rowId: number }[] = [];
-    let seed = 1337 + district.tableName.length; // Seed based on table name for consistency
+    let seed = 1337 + district.tableName.length;
     const rand = () => {
       seed = (seed * 9301 + 49297) % 233280;
       return seed / 233280;
     };
-    const spacing = gridSize > 24 ? 1.1 : gridSize > 10 ? 1.4 : 1.9;
-    for (let x = 0; x < gridSize; x++) {
-      for (let z = 0; z < gridSize; z++) {
-        const rowId = Math.floor(rand() * rowCount);
-        arr.push({
-          x: (x - gridSize / 2) * spacing,
-          z: (z - gridSize / 2) * spacing,
-          height: 0.5 + rand() * 3.5,
-          rowId,
-        });
+
+    const half = gridSize / 2;
+    for (let x = -half; x < half; x += 2) {
+      for (let z = -half; z < half; z += 2) {
+        if (arr.length >= rowCount && rowCount < 1000) break;
+        const h = 0.5 + rand() * (district.scale === "megacity" ? 6 : 2.5);
+        arr.push({ x, z, height: h, rowId: arr.length });
       }
     }
     return arr;
-  }, [rowCount, gridSize, district.tableName]);
+  }, [district, rowCount, gridSize]);
 
-  // The single "needle" building the demo query is looking for (row id 42 = alice@example.com)
-  const needleIndex = useMemo(
-    () => buildings.findIndex((b) => b.rowId % 1000 === 42),
-    [buildings]
-  );
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const color = useMemo(() => new THREE.Color(), []);
 
-  const scanProgress = useMemo(() => {
-    if (!activeOp || !isPlaybackActive) return isPlaybackActive ? 0 : 1;
-    const t = (playheadMs - activeOp.startTime) / activeOp.duration;
-    return Math.max(0, Math.min(1, t));
-  }, [activeOp, playheadMs, isPlaybackActive]);
+  useFrame(() => {
+    if (!meshRef.current) return;
 
-  const isScan = activeOp?.type === "scan";
-  const isBeam = activeOp?.type === "beam" || activeOp?.type === "bitmap";
-  const scanFrontIndex = Math.floor(scanProgress * buildings.length);
+    const opType = activeOp?.type;
+    const progress =
+      activeOp && isPlaybackActive
+        ? Math.min(1, Math.max(0, (playheadMs - activeOp.startTime) / activeOp.duration))
+        : activeOp
+        ? 1
+        : 0;
+
+    buildings.forEach((b, i) => {
+      dummy.position.set(b.x, b.height / 2, b.z);
+      dummy.scale.set(1.4, b.height, 1.4);
+      dummy.updateMatrix();
+      meshRef.current!.setMatrixAt(i, dummy.matrix);
+
+      if (!activeOp) {
+        color.set("#152238");
+      } else if (opType === "scan") {
+        const threshold = progress * buildings.length;
+        if (i < threshold) {
+          color.set("#ff5a6e");
+        } else if (i < threshold + 4) {
+          color.set("#ffe14d");
+        } else {
+          color.set("#1a2b48");
+        }
+      } else if (opType === "beam") {
+        if (b.rowId === 42 || i % 17 === 0) {
+          color.set("#4aff8a");
+        } else {
+          color.set("#152238");
+        }
+      } else if (opType === "fold" || opType === "traffic") {
+        color.set("#9b51e0");
+      } else {
+        color.set("#ffe14d");
+      }
+
+      meshRef.current!.setColorAt(i, color);
+    });
+
+    meshRef.current.instanceMatrix.needsUpdate = true;
+    if (meshRef.current.instanceColor) {
+      meshRef.current.instanceColor.needsUpdate = true;
+    }
+  });
 
   return (
     <group>
-      {isBeam && needleIndex >= 0 && (
-        <Beam target={buildings[needleIndex]} progress={scanProgress} />
-      )}
-      {buildings.map((b, i) => {
-        const isTarget = i === needleIndex;
-        let lit = false;
-        let color = "#2a3556";
+      <instancedMesh
+        ref={meshRef}
+        args={[undefined, undefined, buildings.length]}
+        castShadow
+        receiveShadow
+      >
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial roughness={0.4} metalness={0.6} />
+      </instancedMesh>
 
-        if (isScan) {
-          lit = i <= scanFrontIndex;
-          color = isTarget && lit ? "#ff3d5e" : lit ? "#4d7cff" : "#1a2340";
-        } else if (isBeam) {
-          lit = isTarget && scanProgress > 0.3;
-          color = isTarget ? "#ff3d5e" : "#1a2340";
-        } else if (activeOp) {
-          // A plan-tree selection with no live playback: softly highlight the whole district.
-          lit = true;
-          color = isTarget ? "#ff3d5e" : "#3a4a7a";
-        } else {
-          color = isTarget ? "#ff3d5e" : "#2a3556";
-        }
+      {/* District Ground Base */}
+      <mesh position={[0, -0.1, 0]} receiveShadow>
+        <boxGeometry args={[gridSize + 4, 0.2, gridSize + 4]} />
+        <meshStandardMaterial
+          color={activeOp ? "#1c2b4a" : "#0d1424"}
+          roughness={0.8}
+        />
+      </mesh>
 
-        return (
-          <mesh key={i} position={[b.x, b.height / 2, b.z]} castShadow>
-            <boxGeometry args={[0.8, b.height, 0.8]} />
-            <meshStandardMaterial
-              color={color}
-              emissive={lit ? color : "#000000"}
-              emissiveIntensity={lit ? (isTarget ? 1.2 : 0.3) : 0}
-            />
-          </mesh>
-        );
-      })}
+      {/* District Roads / Indexes */}
+      {district.indexes.map((idx, i) => (
+        <Road key={idx.indexName} index={i} gridSize={gridSize} isPrimary={idx.isPrimary} />
+      ))}
     </group>
+  );
+}
+
+function Road({ index, gridSize, isPrimary }: { index: number; gridSize: number; isPrimary: boolean }) {
+  const offset = (index + 1) * 3 - gridSize / 2;
+  return (
+    <mesh position={[offset, 0.02, 0]}>
+      <planeGeometry args={[1, gridSize]} />
+      <meshBasicMaterial
+        color={isPrimary ? "#ffe14d" : "#4d7cff"}
+        wireframe={false}
+        opacity={0.3}
+        transparent
+      />
+    </mesh>
   );
 }
 
@@ -176,67 +232,38 @@ function ForeignKeyBridges({
   allDistricts,
   districtPositions,
 }: {
-  district: import("./ir").District;
-  allDistricts: import("./ir").District[];
+  district: DistrictType;
+  allDistricts: DistrictType[];
   districtPositions: Map<string, { x: number; z: number }>;
 }) {
-  const bridges = useMemo(() => {
-    return district.foreignKeys.map((fk) => {
-      const targetDistrict = allDistricts.find((d) => d.tableName === fk.foreignTable);
-      if (!targetDistrict) return null;
-      
-      const fromPos = districtPositions.get(district.tableName) || { x: 0, z: 0 };
-      const toPos = districtPositions.get(fk.foreignTable) || { x: 0, z: 0 };
-      
-      return {
-        from: fromPos,
-        to: toPos,
-        constraintName: fk.constraintName,
-      };
-    }).filter(Boolean);
-  }, [district.foreignKeys, allDistricts, districtPositions, district.tableName]);
+  const currentPos = districtPositions.get(district.tableName) || { x: 0, z: 0 };
 
   return (
-    <>
-      {bridges.map((bridge, i) => {
-        if (!bridge) return null;
-        const midX = (bridge.from.x + bridge.to.x) / 2;
-        const midZ = (bridge.from.z + bridge.to.z) / 2;
-        const length = Math.sqrt(
-          Math.pow(bridge.to.x - bridge.from.x, 2) + Math.pow(bridge.to.z - bridge.from.z, 2)
+    <group>
+      {district.foreignKeys.map((fk) => {
+        const targetPos = districtPositions.get(fk.foreignTable);
+        if (!targetPos) return null;
+
+        const start = new THREE.Vector3(0, 0.5, 0);
+        const end = new THREE.Vector3(
+          targetPos.x - currentPos.x,
+          0.5,
+          targetPos.z - currentPos.z
         );
-        const angle = Math.atan2(bridge.to.z - bridge.from.z, bridge.to.x - bridge.from.x);
+
+        const mid = start.clone().lerp(end, 0.5);
+        mid.y += 4;
+
+        const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+        const points = curve.getPoints(20);
+        const geometry = new THREE.BufferGeometry().setFromPoints(points);
 
         return (
-          <group key={i} position={[midX, 2, midZ]} rotation={[0, -angle, 0]}>
-            <mesh>
-              <boxGeometry args={[length, 0.3, 1.5]} />
-              <meshStandardMaterial color="#8b5cf6" emissive="#8b5cf6" emissiveIntensity={0.3} />
-            </mesh>
-          </group>
+          <line key={fk.constraintName} geometry={geometry}>
+            <lineBasicMaterial color="#ffe14d" opacity={0.4} transparent />
+          </line>
         );
       })}
-    </>
-  );
-}
-
-function Beam({
-  target,
-  progress,
-}: {
-  target: { x: number; z: number; height: number };
-  progress: number;
-}) {
-  const ref = useRef<THREE.Mesh>(null);
-  useFrame(() => {
-    if (!ref.current) return;
-    ref.current.scale.y = Math.min(1, progress * 2.5);
-  });
-
-  return (
-    <mesh ref={ref} position={[target.x, 6, target.z]}>
-      <cylinderGeometry args={[0.15, 0.4, 12, 8]} />
-      <meshBasicMaterial color="#ffe14d" transparent opacity={0.7} />
-    </mesh>
+    </group>
   );
 }
