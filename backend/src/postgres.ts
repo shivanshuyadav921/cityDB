@@ -64,7 +64,18 @@ export async function runExplain(
   params?: unknown[]
 ): Promise<PostgresExplainRoot> {
   const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`;
-  const client = await pool.connect();
+  let client: pg.PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND")) {
+      throw new Error(
+        "Cannot connect to PostgreSQL. Please set DATABASE_URL in Vercel Project Settings → Environment Variables."
+      );
+    }
+    throw err;
+  }
   try {
     // Read-only transaction ensures the visualizer cannot mutate data
     // even if database permissions are broad.
@@ -100,7 +111,18 @@ export async function runExplainOnly(
   sql: string
 ): Promise<PostgresExplainRoot> {
   const explainSql = `EXPLAIN (FORMAT JSON) ${sql}`;
-  const client = await pool.connect();
+  let client: pg.PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND")) {
+      throw new Error(
+        "Cannot connect to PostgreSQL. Please set DATABASE_URL in Vercel Project Settings → Environment Variables."
+      );
+    }
+    throw err;
+  }
   try {
     const result = await client.query<{ "QUERY PLAN": PostgresExplainRoot[] }>(
       { text: explainSql }
@@ -141,7 +163,18 @@ function fillActualTimes(node: PostgresPlanNode): void {
 // ─── Query cancellation ───────────────────────────────────────────────────────
 
 export async function cancelQuery(pid: number): Promise<void> {
-  const client = await pool.connect();
+  let client: pg.PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND")) {
+      throw new Error(
+        "Cannot connect to PostgreSQL. Please set DATABASE_URL in Vercel Project Settings → Environment Variables."
+      );
+    }
+    throw err;
+  }
   try {
     await client.query("SELECT pg_cancel_backend($1)", [pid]);
   } finally {

@@ -43,48 +43,58 @@ export interface CityDBState {
 export function useCityDB(): CityDBState {
   const wsRef = useRef<WebSocket | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isFetchingRef = useRef(false);
 
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(true);
   const [transport, setTransport] = useState<"websocket" | "http">("http");
   const [city, setCity] = useState<CitySnapshot | null>(null);
   const [timeline, setTimeline] = useState<VisualTimeline | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // ── HTTP fallback loader for City ──────────────────────────────────────────
+  // ── HTTP loader for City Snapshot ──────────────────────────────────────────
   const fetchCityHttp = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
     try {
       const resp = await fetch("/api/city", {
         headers: {
           ...getAuthHeader(),
         },
       });
-      if (!resp.ok) {
-        const errJson = await resp.json().catch(() => ({}));
-        throw new Error(errJson.error || `Server responded with status ${resp.status}`);
-      }
-      const data = (await resp.json()) as CitySnapshot;
-      setCity(data);
-      setConnected(true);
-      setError(null);
-    } catch (err) {
-      const msg = (err as Error).message;
-      // If DB is offline, provide a friendly default snapshot so 3D scene renders
-      setConnected(true);
-      if (!city) {
-        setCity({ districts: [] });
-      }
-      setError(`Notice: ${msg}`);
-    }
-  }, [city]);
 
-  // ── WebSocket connect / reconnect ──────────────────────────────────────────
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        if (data.districts && Array.isArray(data.districts)) {
+          setCity(data as CitySnapshot);
+        } else {
+          setCity({ districts: [] });
+        }
+        if (data.warning) {
+          setError(data.warning);
+        } else {
+          setError(null);
+        }
+      } else {
+        setCity({ districts: [] });
+        if (data.error) {
+          setError(`Notice: ${data.error}`);
+        }
+      }
+      setConnected(true);
+    } catch (err) {
+      setCity({ districts: [] });
+      setConnected(true);
+    } finally {
+      isFetchingRef.current = false;
+    }
+  }, []);
+
+  // ── WebSocket connect ──────────────────────────────────────────────────────
   const connectWs = useCallback(() => {
     const wsUrl = deriveWsUrl();
     if (!wsUrl) {
-      // Vercel or explicitly disabled WS: use HTTP directly
       setTransport("http");
       fetchCityHttp();
       return;
@@ -99,33 +109,27 @@ export function useCityDB(): CityDBState {
 
       const wsTimeout = setTimeout(() => {
         if (ws.readyState !== WebSocket.OPEN) {
-          // WS taking too long, fall back to HTTP
           setTransport("http");
           fetchCityHttp();
         }
-      }, 2500);
+      }, 2000);
 
       ws.onopen = () => {
         clearTimeout(wsTimeout);
         setConnected(true);
         setTransport("websocket");
         setError(null);
-        reconnectAttemptsRef.current = 0;
         ws.send(JSON.stringify({ type: "get_city" }));
       };
 
-      ws.onclose = (event) => {
+      ws.onclose = () => {
         clearTimeout(wsTimeout);
-        if (event.wasClean) return;
-        // WS closed; seamlessly switch transport to HTTP
         setTransport("http");
-        fetchCityHttp();
       };
 
       ws.onerror = () => {
         clearTimeout(wsTimeout);
         setTransport("http");
-        fetchCityHttp();
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -153,13 +157,12 @@ export function useCityDB(): CityDBState {
     }
   }, [fetchCityHttp]);
 
-  // Mount
+  // Initial load
   useEffect(() => {
     connectWs();
     fetchCityHttp();
 
     return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       abortControllerRef.current?.abort();
       wsRef.current?.close(1000, "Component unmounted");
     };
@@ -172,13 +175,11 @@ export function useCityDB(): CityDBState {
       setLoading(true);
       setError(null);
 
-      // Try WS if connected via WS
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "run_query", payload: { sql } }));
         return;
       }
 
-      // HTTP fallback
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -194,7 +195,7 @@ export function useCityDB(): CityDBState {
           signal: controller.signal,
         });
 
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
           throw new Error(data.error || "Failed to execute query.");
         }
@@ -217,13 +218,11 @@ export function useCityDB(): CityDBState {
       setLoading(true);
       setError(null);
 
-      // Try WS if connected via WS
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "explain_query", payload: { sql } }));
         return;
       }
 
-      // HTTP fallback
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -239,7 +238,7 @@ export function useCityDB(): CityDBState {
           signal: controller.signal,
         });
 
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
           throw new Error(data.error || "Failed to explain query.");
         }

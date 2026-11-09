@@ -193,8 +193,11 @@ app.get("/api/city", async (_req: Request, res: Response) => {
     const snapshot = await getCityMetadata();
     res.json(snapshot);
   } catch (err) {
-    logger.error("city endpoint error", { message: (err as Error).message });
-    res.status(500).json({ error: "Failed to fetch city metadata." });
+    logger.warn("city endpoint db offline", { message: (err as Error).message });
+    res.status(200).json({
+      districts: [],
+      warning: "PostgreSQL is not connected. Configure DATABASE_URL in Vercel Project Settings.",
+    });
   }
 });
 

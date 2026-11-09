@@ -15,7 +15,9 @@ export default async function handler(request: IncomingMessage, response: Server
     const snapshot = await getCityMetadata();
     sendJson(response, 200, snapshot);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load city metadata.";
-    sendJson(response, 500, { error: message });
+    sendJson(response, 200, {
+      districts: [],
+      warning: "PostgreSQL is not connected. Configure DATABASE_URL in Vercel Project Settings.",
+    });
   }
 }
